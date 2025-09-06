@@ -153,19 +153,210 @@ def load_data(uploaded_file):
         st.error(f"Error crítico al procesar el archivo: {str(e)}")
         return None
 
-def apply_filters(df, filters):
-    """Aplica filtros al DataFrame"""
+def classify_column_type(df, column):
+    """Clasifica el tipo de columna para determinar el tipo de filtro"""
+    if column not in df.columns:
+        return None
+    
+    col_data = df[column].dropna()
+    
+    if len(col_data) == 0:
+        return 'empty'
+    
+    # Verificar si es fecha/datetime
+    if pd.api.types.is_datetime64_any_dtype(col_data):
+        return 'datetime'
+    
+    # Verificar si es numérico
+    if pd.api.types.is_numeric_dtype(col_data):
+        unique_values = col_data.nunique()
+        # Si tiene muchos valores únicos, usar slider; si pocos, usar selectbox
+        if unique_values > 20:
+            return 'numeric_slider'
+        else:
+            return 'numeric_select'
+    
+    # Para columnas de texto/string
+    if pd.api.types.is_string_dtype(col_data) or pd.api.types.is_object_dtype(col_data):
+        unique_values = col_data.nunique()
+        # Si tiene muchos valores únicos, usar multiselect; si pocos, usar selectbox
+        if unique_values > 50:
+            return 'text_multiselect'
+        elif unique_values > 10:
+            return 'text_select_multi'
+        else:
+            return 'text_select_single'
+    
+    return 'other'
+
+def create_dynamic_filters(df):
+    """Crea filtros dinámicos según el tipo de datos de cada columna"""
+    with st.sidebar:
+        st.header("🔍 Filtros Dinámicos")
+        
+        filters = {}
+        
+        # Permitir al usuario seleccionar qué columnas filtrar
+        all_columns = [col for col in df.columns if not col.startswith('Unnamed')]
+        
+        # Excluir columnas que no son útiles para filtrar
+        excluded_for_filters = [
+            'DESCRIPCION', 'OBSERVACION', 'PUNTO DE REFERENCIA', 
+            'DIRECCIÓN', 'NOMBRE LABOR'
+        ]
+        
+        filterable_columns = [col for col in all_columns if col not in excluded_for_filters]
+        
+        # Selectbox para elegir columnas a filtrar
+        st.subheader("Seleccionar columnas para filtrar:")
+        selected_columns = st.multiselect(
+            "Columnas disponibles:",
+            filterable_columns,
+            default=[col for col in ['ESTADO REPORTE', 'COMUNA', 'NOMBREADMINISTRATIVO', 'FECHA DE REGISTRO'] if col in filterable_columns][:4],
+            key="column_selector"
+        )
+        
+        st.divider()
+        
+        # Crear filtros dinámicos para cada columna seleccionada
+        for column in selected_columns:
+            column_type = classify_column_type(df, column)
+            
+            st.subheader(f"📋 {column}")
+            
+            if column_type == 'datetime':
+                # Filtro de fecha con date_input
+                col_data = df[column].dropna()
+                if len(col_data) > 0:
+                    min_date = col_data.min().date()
+                    max_date = col_data.max().date()
+                    
+                    date_range = st.date_input(
+                        f"Rango de fechas:",
+                        value=(min_date, max_date),
+                        min_value=min_date,
+                        max_value=max_date,
+                        key=f"date_{column}"
+                    )
+                    
+                    if len(date_range) == 2:
+                        filters[column] = {
+                            'type': 'date_range',
+                            'value': date_range
+                        }
+            
+            elif column_type == 'numeric_slider':
+                # Slider para columnas numéricas con muchos valores
+                col_data = df[column].dropna()
+                if len(col_data) > 0:
+                    min_val = float(col_data.min())
+                    max_val = float(col_data.max())
+                    
+                    if min_val != max_val:
+                        slider_range = st.slider(
+                            f"Rango de valores:",
+                            min_value=min_val,
+                            max_value=max_val,
+                            value=(min_val, max_val),
+                            key=f"slider_{column}"
+                        )
+                        filters[column] = {
+                            'type': 'numeric_range',
+                            'value': slider_range
+                        }
+            
+            elif column_type in ['numeric_select', 'text_select_single']:
+                # Selectbox para columnas con pocos valores únicos
+                unique_values = sorted(df[column].dropna().unique().astype(str).tolist())
+                
+                selected_value = st.selectbox(
+                    f"Seleccionar valor:",
+                    ['Todos'] + unique_values,
+                    key=f"select_{column}"
+                )
+                
+                if selected_value != 'Todos':
+                    filters[column] = {
+                        'type': 'single_select',
+                        'value': selected_value
+                    }
+            
+            elif column_type in ['text_select_multi', 'text_multiselect']:
+                # Multiselect para columnas de texto con varios valores
+                unique_values = sorted(df[column].dropna().unique().astype(str).tolist())
+                
+                # Opción para seleccionar todos
+                select_all = st.checkbox(f"Seleccionar todos", key=f"all_{column}")
+                
+                if select_all:
+                    selected_values = unique_values
+                else:
+                    selected_values = st.multiselect(
+                        f"Seleccionar valores:",
+                        unique_values,
+                        key=f"multi_{column}"
+                    )
+                
+                if selected_values:
+                    filters[column] = {
+                        'type': 'multi_select',
+                        'value': selected_values
+                    }
+            
+            st.divider()
+        
+        # Botón para limpiar todos los filtros
+        if st.button("🗑️ Limpiar todos los filtros"):
+            st.rerun()
+        
+        # Mostrar resumen de filtros aplicados
+        if filters:
+            st.subheader("📊 Filtros activos:")
+            for col, filter_info in filters.items():
+                if filter_info['type'] == 'date_range':
+                    st.write(f"• **{col}**: {filter_info['value'][0]} - {filter_info['value'][1]}")
+                elif filter_info['type'] == 'numeric_range':
+                    st.write(f"• **{col}**: {filter_info['value'][0]:.2f} - {filter_info['value'][1]:.2f}")
+                elif filter_info['type'] == 'single_select':
+                    st.write(f"• **{col}**: {filter_info['value']}")
+                elif filter_info['type'] == 'multi_select':
+                    if len(filter_info['value']) <= 3:
+                        st.write(f"• **{col}**: {', '.join(filter_info['value'])}")
+                    else:
+                        st.write(f"• **{col}**: {len(filter_info['value'])} valores seleccionados")
+    
+    return filters
+
+def apply_dynamic_filters(df, filters):
+    """Aplica los filtros dinámicos al DataFrame"""
     filtered_df = df.copy()
     
-    for column, value in filters.items():
-        if isinstance(value, tuple):
-            start_date, end_date = value
+    for column, filter_info in filters.items():
+        if column not in filtered_df.columns:
+            continue
+        
+        filter_type = filter_info['type']
+        filter_value = filter_info['value']
+        
+        if filter_type == 'date_range' and len(filter_value) == 2:
+            start_date, end_date = filter_value
             filtered_df = filtered_df[
-                (filtered_df[column].dt.date >= pd.to_datetime(start_date).date()) & 
-                (filtered_df[column].dt.date <= pd.to_datetime(end_date).date())
+                (filtered_df[column].dt.date >= start_date) & 
+                (filtered_df[column].dt.date <= end_date)
             ]
-        elif value != "Todos":
-            filtered_df = filtered_df[filtered_df[column].astype(str) == str(value)]
+        
+        elif filter_type == 'numeric_range':
+            min_val, max_val = filter_value
+            filtered_df = filtered_df[
+                (filtered_df[column] >= min_val) & 
+                (filtered_df[column] <= max_val)
+            ]
+        
+        elif filter_type == 'single_select':
+            filtered_df = filtered_df[filtered_df[column].astype(str) == str(filter_value)]
+        
+        elif filter_type == 'multi_select':
+            filtered_df = filtered_df[filtered_df[column].astype(str).isin([str(v) for v in filter_value])]
     
     return filtered_df
 
@@ -358,11 +549,12 @@ def create_zone_line_chart(metrics_df, zone_name):
 
 # Interfaz principal de Streamlit
 def main():
-    st.title("Sistema de Análisis de Reportes By AVR")
+    st.title("🏢 Sistema de Análisis de Reportes By AVR")
+    st.markdown("---")
     
     # Sidebar para carga de archivos
     with st.sidebar:
-        st.header("Configuración")
+        st.header("📁 Configuración")
         uploaded_file = st.file_uploader("Subir archivo TXT", type=['txt'])
         
         if uploaded_file is not None:
@@ -372,61 +564,52 @@ def main():
             df = st.session_state.get('df', None)
     
     if df is None:
-        st.info("Por favor, sube un archivo TXT para comenzar el análisis.")
+        st.info("📤 Por favor, sube un archivo TXT para comenzar el análisis.")
         return
     
-    # Pestañas principales
-    tabs = st.tabs(["Datos", "Gráficos", "Reporte Mensual", "Reporte por Zona"])
+    # CREAR FILTROS DINÁMICOS
+    filters = create_dynamic_filters(df)
     
-    # === PESTAÑA DATOS ===
+    # Aplicar filtros dinámicos al DataFrame
+    filtered_df = apply_dynamic_filters(df, filters)
+    
+    # Mostrar estadísticas de filtrado
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric(
+            label="📊 Total de registros",
+            value=f"{len(df):,}",
+            delta=None
+        )
+    
+    with col2:
+        st.metric(
+            label="🔍 Registros filtrados",
+            value=f"{len(filtered_df):,}",
+            delta=f"{len(filtered_df) - len(df):,}" if len(filtered_df) != len(df) else None
+        )
+    
+    with col3:
+        percentage = (len(filtered_df) / len(df)) * 100 if len(df) > 0 else 0
+        st.metric(
+            label="📈 Porcentaje mostrado",
+            value=f"{percentage:.1f}%"
+        )
+    
+    st.markdown("---")
+    
+    # Pestañas principales
+    tabs = st.tabs(["📋 Tabla Filtrada", "📊 Gráficos", "📅 Reporte Mensual", "🗺️ Reporte por Zona"])
+    
+    # === PESTAÑA TABLA FILTRADA ===
     with tabs[0]:
-        st.header("Vista de Datos")
+        st.header("📋 Tabla de Datos Filtrados")
         
-        # Filtros en el sidebar
-        with st.sidebar:
-            st.header("Filtros")
-            filters = {}
-            
-            # Lista de columnas para filtros
-            filter_columns = [
-                'CÓDIGO', 'COMUNA', 'BARRIO', 'GRUPO DE TRABAJO',
-                'TIPO DAÑO', 'FECHA DE REGISTRO', 'FECHAHORAATENCION',
-                'ADMINISTRATIVO', 'NOMBREADMINISTRATIVO', 'ESTADO REPORTE',
-                'TIPO ASIGNACIÓN'
-            ]
-            
-            available_columns = [col for col in filter_columns if col in df.columns]
-            
-            for col in available_columns:
-                if pd.api.types.is_datetime64_any_dtype(df[col]):
-                    st.subheader(f"Filtro de {col}")
-                    min_date = df[col].min().date() if not df[col].isna().all() else None
-                    max_date = df[col].max().date() if not df[col].isna().all() else None
-                    
-                    if min_date and max_date:
-                        date_range = st.date_input(
-                            f"Rango de {col}",
-                            value=(min_date, max_date),
-                            min_value=min_date,
-                            max_value=max_date,
-                            key=f"date_{col}"
-                        )
-                        
-                        if len(date_range) == 2:
-                            filters[col] = date_range
-                else:
-                    unique_values = ['Todos'] + sorted(df[col].dropna().unique().astype(str).tolist())
-                    selected_value = st.selectbox(f"Filtrar por {col}", unique_values, key=f"select_{col}")
-                    if selected_value != "Todos":
-                        filters[col] = selected_value
-        
-        # Aplicar filtros
-        filtered_df = apply_filters(df, filters)
-        
-        st.info(f"Mostrando {len(filtered_df)} de {len(df)} registros")
-        
-        # Mostrar resumen
         if not filtered_df.empty:
+            # Mostrar resumen por categorías principales
+            st.subheader("📈 Resumen de datos filtrados")
+            
             col1, col2, col3 = st.columns(3)
             
             main_cat_cols = ['ESTADO REPORTE', 'NOMBREADMINISTRATIVO', 'COMUNA']
@@ -434,23 +617,69 @@ def main():
             for i, col in enumerate(main_cat_cols):
                 if col in filtered_df.columns:
                     with [col1, col2, col3][i]:
-                        st.subheader(f"{col}")
+                        st.write(f"**{col}**")
                         counts = filtered_df[col].value_counts().head(5)
                         for value, count in counts.items():
                             if pd.notna(value):
-                                st.write(f"**{value}:** {count}")
+                                st.write(f"• {value}: **{count:,}**")
+            
+            st.markdown("---")
+            
+            # Controles para la tabla
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Selectbox para elegir cuántas filas mostrar
+                rows_to_show = st.selectbox(
+                    "Filas a mostrar:",
+                    [50, 100, 200, 500, 1000, "Todas"],
+                    index=1
+                )
+            
+            with col2:
+                # Checkbox para mostrar solo columnas con datos
+                hide_empty_cols = st.checkbox("Ocultar columnas vacías", value=True)
+            
+            # Preparar DataFrame para mostrar
+            display_df = filtered_df.copy()
+            
+            if hide_empty_cols:
+                # Remover columnas que están completamente vacías
+                display_df = display_df.dropna(axis=1, how='all')
+            
+            # Aplicar límite de filas
+            if rows_to_show != "Todas":
+                display_df = display_df.head(int(rows_to_show))
+            
+            # Mostrar tabla con opciones de descarga
+            st.subheader(f"📊 Mostrando {len(display_df)} de {len(filtered_df)} registros")
+            
+            # Opción para descargar datos filtrados
+            if not filtered_df.empty:
+                csv = filtered_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Descargar datos filtrados (CSV)",
+                    data=csv,
+                    file_name=f"datos_filtrados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+            
+            # Mostrar la tabla
+            st.dataframe(
+                display_df, 
+                use_container_width=True,
+                height=600
+            )
         
-        # Mostrar datos
-        st.dataframe(filtered_df.head(100), use_container_width=True)
+        else:
+            st.warning("⚠️ No hay datos que coincidan con los filtros aplicados.")
+            st.info("💡 Intenta ajustar o limpiar algunos filtros para ver más resultados.")
     
     # === PESTAÑA GRÁFICOS ===
     with tabs[1]:
-        st.header("Análisis Gráfico")
+        st.header("📊 Análisis Gráfico")
         
-        if not df.empty:
-            # Filtrar el DataFrame actual
-            current_df = apply_filters(df, st.session_state.get('current_filters', {}))
-            
+        if not filtered_df.empty:
             # Columnas excluidas para gráficos
             excluded_columns = [
                 'CÓDIGO', 'PRIORIDAD', 'PUNTO DE REFERENCIA', 'LUMINARIAS', 'TELEFONO',
@@ -462,42 +691,66 @@ def main():
             ]
             
             cat_cols = [
-                col for col in current_df.columns 
+                col for col in filtered_df.columns 
                 if col not in excluded_columns 
-                and pd.api.types.is_string_dtype(current_df[col])
+                and pd.api.types.is_string_dtype(filtered_df[col])
+                and filtered_df[col].nunique() > 1
+                and filtered_df[col].nunique() <= 50
             ]
             
             if cat_cols:
-                selected_column = st.selectbox("Seleccionar columna para graficar", cat_cols)
+                selected_column = st.selectbox(
+                    "📊 Seleccionar columna para graficar:", 
+                    cat_cols
+                )
                 
-                fig = create_enhanced_bar_plot(current_df, selected_column)
+                fig = create_enhanced_bar_plot(filtered_df, selected_column)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Mostrar estadísticas adicionales
+                    st.subheader("📈 Estadísticas de la columna seleccionada")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Valores únicos", filtered_df[selected_column].nunique())
+                    with col2:
+                        st.metric("Valores no nulos", filtered_df[selected_column].notna().sum())
+                    with col3:
+                        most_common = filtered_df[selected_column].mode().iloc[0] if not filtered_df[selected_column].empty else "N/A"
+                        st.metric("Valor más común", str(most_common))
             else:
-                st.warning("No hay columnas categóricas disponibles para graficar.")
+                st.warning("⚠️ No hay columnas categóricas adecuadas para graficar con los filtros actuales.")
+                st.info("💡 Intenta ajustar los filtros para incluir más variedad de datos.")
+        else:
+            st.warning("⚠️ No hay datos para graficar con los filtros aplicados.")
     
     # === PESTAÑA REPORTE MENSUAL ===
     with tabs[2]:
-        st.header("Reporte Mensual")
+        st.header("📅 Reporte Mensual")
         
         col1, col2, col3 = st.columns([1, 1, 2])
         
         with col1:
-            # Obtener años disponibles
-            if 'FECHA DE REGISTRO' in df.columns:
-                years = sorted(df['FECHA DE REGISTRO'].dt.year.dropna().unique().astype(int).tolist())
-                selected_year = st.selectbox("Año", years)
+            # Obtener años disponibles de los datos filtrados
+            if 'FECHA DE REGISTRO' in filtered_df.columns and not filtered_df.empty:
+                years = sorted(filtered_df['FECHA DE REGISTRO'].dt.year.dropna().unique().astype(int).tolist())
+                if years:
+                    selected_year = st.selectbox("📅 Año", years)
+                else:
+                    st.warning("No hay datos de fecha disponibles")
+                    return
             else:
-                st.error("No se encontró la columna 'FECHA DE REGISTRO'")
+                st.error("No se encontró la columna 'FECHA DE REGISTRO' o no hay datos filtrados")
                 return
         
         with col2:
             months = {i: calendar.month_name[i] for i in range(1, 13)}
-            selected_month = st.selectbox("Mes", list(months.keys()), format_func=lambda x: months[x])
+            selected_month = st.selectbox("📅 Mes", list(months.keys()), format_func=lambda x: months[x])
         
         with col3:
-            if st.button("Generar Reporte Mensual"):
-                # Generar reporte
+            if st.button("📊 Generar Reporte Mensual"):
+                # Generar reporte usando datos filtrados
                 days_in_month = calendar.monthrange(selected_year, selected_month)[1]
                 
                 report_data = []
@@ -505,12 +758,15 @@ def main():
                     current_date = pd.Timestamp(year=selected_year, month=selected_month, day=day)
                     
                     # Reportes registrados
-                    registered = len(df[df['FECHA DE REGISTRO'].dt.date == current_date.date()])
+                    registered = len(filtered_df[filtered_df['FECHA DE REGISTRO'].dt.date == current_date.date()])
                     
                     # Reportes reparados
                     repaired = 0
-                    if 'FECHAHORAATENCION' in df.columns:
-                        repaired = len(df[df['FECHAHORAATENCION'].dt.date == current_date.date()])
+                    if 'FECHAHORAATENCION' in filtered_df.columns:
+                        repaired = len(filtered_df[
+                            (filtered_df['FECHAHORAATENCION'].dt.date == current_date.date()) &
+                            (filtered_df['ESTADO REPORTE'].str.upper() == 'REPARADO')
+                        ])
                     
                     report_data.append({
                         'Día': day,
@@ -528,42 +784,100 @@ def main():
                 }
                 report_df = pd.concat([report_df, pd.DataFrame([totals])], ignore_index=True)
                 
-                st.dataframe(report_df, use_container_width=True)
+                # Mostrar el reporte
+                st.subheader(f"📊 Reporte de {calendar.month_name[selected_month]} {selected_year}")
+                st.dataframe(report_df, use_container_width=True, height=600)
+                
+                # Crear gráfico del reporte mensual
+                if len(report_df) > 1:  # Excluir la fila de totales para el gráfico
+                    chart_df = report_df[:-1]  # Sin la fila TOTAL
+                    
+                    fig = go.Figure()
+                    
+                    # Línea de registros
+                    fig.add_trace(go.Scatter(
+                        x=chart_df['Día'],
+                        y=chart_df['Reportes Registrados'],
+                        mode='lines+markers',
+                        name='Registrados',
+                        line=dict(color='#3498db', width=3),
+                        marker=dict(size=8)
+                    ))
+                    
+                    # Línea de reparados
+                    fig.add_trace(go.Scatter(
+                        x=chart_df['Día'],
+                        y=chart_df['Reportes Reparados'],
+                        mode='lines+markers',
+                        name='Reparados',
+                        line=dict(color='#e67e22', width=3),
+                        marker=dict(size=8)
+                    ))
+                    
+                    fig.update_layout(
+                        title=f'📈 Reportes por Día - {calendar.month_name[selected_month]} {selected_year}',
+                        xaxis_title='Día del Mes',
+                        yaxis_title='Cantidad de Reportes',
+                        height=500,
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Opción para descargar el reporte
+                csv = report_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Descargar Reporte Mensual (CSV)",
+                    data=csv,
+                    file_name=f"reporte_mensual_{selected_year}_{selected_month:02d}.csv",
+                    mime="text/csv"
+                )
     
     # === PESTAÑA REPORTE POR ZONA ===
     with tabs[3]:
-        st.header("Reporte por Zona")
+        st.header("🗺️ Reporte por Zona")
         
         # Controles de selección
         col1, col2 = st.columns(2)
         
         with col1:
-            if 'FECHA DE REGISTRO' in df.columns:
-                years = sorted(df['FECHA DE REGISTRO'].dt.year.dropna().unique().astype(int).tolist())
-                zone_year = st.selectbox("Año", years, key="zone_year")
+            if 'FECHA DE REGISTRO' in filtered_df.columns and not filtered_df.empty:
+                years = sorted(filtered_df['FECHA DE REGISTRO'].dt.year.dropna().unique().astype(int).tolist())
+                if years:
+                    zone_year = st.selectbox("📅 Año", years, key="zone_year")
+                else:
+                    st.warning("No hay datos de fecha disponibles")
+                    return
             else:
-                st.error("No se encontró la columna 'FECHA DE REGISTRO'")
+                st.error("No se encontró la columna 'FECHA DE REGISTRO' o no hay datos filtrados")
                 return
         
         with col2:
             months = {i: calendar.month_name[i] for i in range(1, 13)}
-            zone_month = st.selectbox("Mes", list(months.keys()), 
+            zone_month = st.selectbox("📅 Mes", list(months.keys()), 
                                     format_func=lambda x: months[x], key="zone_month")
         
-        if st.button("Generar Reporte por Zona"):
+        if st.button("📊 Generar Reporte por Zona"):
             # Verificar que existan las zonas
-            if 'NOMBREADMINISTRATIVO' not in df.columns:
+            if 'NOMBREADMINISTRATIVO' not in filtered_df.columns:
                 st.error("No se encontró la columna 'NOMBREADMINISTRATIVO'")
                 return
+            
+            # Mostrar las zonas disponibles en los datos filtrados
+            available_zones = filtered_df['NOMBREADMINISTRATIVO'].dropna().unique()
+            sur_zones = [zone for zone in available_zones if 'SUR' in str(zone).upper()]
+            centro_zones = [zone for zone in available_zones if 'CENTRO' in str(zone).upper()]
+            
+            st.info(f"🔍 Zonas encontradas: SUR ({len(sur_zones)} zonas), CENTRO ({len(centro_zones)} zonas)")
             
             # Crear dos columnas para las zonas
             col1, col2 = st.columns(2)
             
-            # ZONA SUR
+            # ZONA SUR - usando datos filtrados
             with col1:
-                st.subheader("ZONA SUR")
+                st.subheader("🌅 ZONA SUR")
                 
-                sur_metrics, sur_summary = calculate_zone_metrics(df, "SUR", zone_year, zone_month)
+                sur_metrics, sur_summary = calculate_zone_metrics(filtered_df, "SUR", zone_year, zone_month)
                 
                 if sur_summary:
                     # Tabla resumen
@@ -574,14 +888,25 @@ def main():
                     sur_chart = create_zone_line_chart(sur_metrics, "ZONA SUR")
                     if sur_chart:
                         st.plotly_chart(sur_chart, use_container_width=True)
+                    
+                    # Opción para descargar datos de la zona sur
+                    if sur_metrics is not None and not sur_metrics.empty:
+                        csv_sur = sur_metrics.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Descargar datos Zona Sur",
+                            data=csv_sur,
+                            file_name=f"zona_sur_{zone_year}_{zone_month:02d}.csv",
+                            mime="text/csv",
+                            key="download_sur"
+                        )
                 else:
-                    st.warning("No se encontraron datos para la Zona Sur")
+                    st.warning("⚠️ No se encontraron datos para la Zona Sur con los filtros aplicados")
             
-            # ZONA CENTRO
+            # ZONA CENTRO - usando datos filtrados
             with col2:
-                st.subheader("ZONA CENTRO")
+                st.subheader("🏙️ ZONA CENTRO")
                 
-                centro_metrics, centro_summary = calculate_zone_metrics(df, "CENTRO", zone_year, zone_month)
+                centro_metrics, centro_summary = calculate_zone_metrics(filtered_df, "CENTRO", zone_year, zone_month)
                 
                 if centro_summary:
                     # Tabla resumen
@@ -592,12 +917,68 @@ def main():
                     centro_chart = create_zone_line_chart(centro_metrics, "ZONA CENTRO")
                     if centro_chart:
                         st.plotly_chart(centro_chart, use_container_width=True)
+                    
+                    # Opción para descargar datos de la zona centro
+                    if centro_metrics is not None and not centro_metrics.empty:
+                        csv_centro = centro_metrics.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Descargar datos Zona Centro",
+                            data=csv_centro,
+                            file_name=f"zona_centro_{zone_year}_{zone_month:02d}.csv",
+                            mime="text/csv",
+                            key="download_centro"
+                        )
                 else:
-                    st.warning("No se encontraron datos para la Zona Centro")
+                    st.warning("⚠️ No se encontraron datos para la Zona Centro con los filtros aplicados")
+            
+            # Comparativa entre zonas
+            if sur_summary and centro_summary:
+                st.markdown("---")
+                st.subheader("📊 Comparativa entre Zonas")
+                
+                # Crear DataFrame comparativo
+                comparison_data = {
+                    'Métrica': list(sur_summary.keys()),
+                    'Zona Sur': list(sur_summary.values()),
+                    'Zona Centro': list(centro_summary.values())
+                }
+                
+                comparison_df = pd.DataFrame(comparison_data)
+                comparison_df['Diferencia'] = comparison_df['Zona Sur'] - comparison_df['Zona Centro']
+                comparison_df['% Sur vs Centro'] = (
+                    (comparison_df['Zona Sur'] / comparison_df['Zona Centro'] * 100).round(1)
+                    .fillna(0).astype(str) + '%'
+                )
+                
+                st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+                
+                # Gráfico comparativo
+                metrics_for_chart = ['Generacion', 'Ejecucion Corrientes', 'Ejecucion Antiguas']
+                
+                fig_comp = go.Figure(data=[
+                    go.Bar(name='Zona Sur', x=metrics_for_chart, 
+                           y=[sur_summary[m] for m in metrics_for_chart], 
+                           marker_color='#3498db'),
+                    go.Bar(name='Zona Centro', x=metrics_for_chart, 
+                           y=[centro_summary[m] for m in metrics_for_chart],
+                           marker_color='#e67e22')
+                ])
+                
+                fig_comp.update_layout(
+                    title='📊 Comparación por Métricas - Sur vs Centro',
+                    xaxis_title='Métricas',
+                    yaxis_title='Cantidad',
+                    barmode='group',
+                    height=400
+                )
+                
+                st.plotly_chart(fig_comp, use_container_width=True)
 
 if __name__ == "__main__":
     # Inicializar session state
     if 'df' not in st.session_state:
         st.session_state.df = None
+    if 'current_filters' not in st.session_state:
+        st.session_state.current_filters = {}
     
     main()

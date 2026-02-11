@@ -61,7 +61,6 @@ def load_data(uploaded_file):
         # Lista de columnas de fecha/hora
         datetime_cols = [
             'FECHA DE REGISTRO',
-            'FECHA LIMITE RESPUESTA',
             'FECHAHORADICTADO',
             'FECHAHORALLEGADA',
             'FECHAHORAATENCION'
@@ -85,9 +84,6 @@ def load_data(uploaded_file):
             'TELEFONO': 'Int64',
             'X': 'Int64',
             'Y': 'Int64',
-            'CODIGOACTUAL': 'Int64',
-            'CODIGOAPOYO': 'Int64',
-            'PINTADOAPOYO': 'Int64',
             'LATITUD': 'float64',
             'LONGITUD': 'float64'
         }
@@ -212,7 +208,7 @@ def create_dynamic_filters(df):
         selected_columns = st.multiselect(
             "Columnas disponibles:",
             filterable_columns,
-            default=[col for col in ['ESTADO REPORTE', 'COMUNA', 'NOMBREADMINISTRATIVO', 'FECHA DE REGISTRO'] if col in filterable_columns][:4],
+            default=[col for col in [] if col in filterable_columns][:4],
             key="column_selector"
         )
         
